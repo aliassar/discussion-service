@@ -26,11 +26,16 @@ const (
 
 // Store persists whole records; trees and metrics are derived by the Service,
 // so an implementation needs only plain reads and writes.
+//
+// CreatePost and CreateComment take an idempotency key, which may be empty. If
+// the key is already bound they return the record stored under it with
+// created=false and write nothing; otherwise they store the record and bind
+// the key. The check and the write must be one atomic step.
 type Store interface {
-	CreatePost(ctx context.Context, p Post) error
+	CreatePost(ctx context.Context, p Post, key string) (stored Post, created bool, err error)
 	Post(ctx context.Context, id string) (Post, error)
 
-	CreateComment(ctx context.Context, c Comment) error
+	CreateComment(ctx context.Context, c Comment, key string) (stored Comment, created bool, err error)
 	Comment(ctx context.Context, id string) (Comment, error)
 	// CommentsByPost returns comments oldest first.
 	CommentsByPost(ctx context.Context, postID string) ([]Comment, error)
@@ -39,10 +44,6 @@ type Store interface {
 	AddLike(ctx context.Context, l Like) error
 	RemoveLike(ctx context.Context, t Target, userID string) error
 	LikesForTargets(ctx context.Context, targets []Target) ([]Like, error)
-
-	// ClaimKey binds an idempotency key to id on first use and returns the id
-	// it is bound to. The check and the write must be one atomic step.
-	ClaimKey(ctx context.Context, key, id string) (string, error)
 }
 
 type Service struct {
@@ -78,20 +79,8 @@ func (s *Service) CreatePost(ctx context.Context, in CreatePostInput) (post Post
 	}
 
 	id, at := s.ids.next()
-	first, replay, err := s.claim(ctx, "post", in.IdempotencyKey, id)
-	if err != nil {
-		return Post{}, false, err
-	}
-	if replay {
-		p, err := s.store.Post(ctx, first)
-		return p, false, err
-	}
-
 	p := Post{ID: id, AuthorID: author, Title: title, Body: body, CreatedAt: at}
-	if err := s.store.CreatePost(ctx, p); err != nil {
-		return Post{}, false, err
-	}
-	return p, true, nil
+	return s.store.CreatePost(ctx, p, scopedKey("post", in.IdempotencyKey))
 }
 
 type CreateCommentInput struct {
@@ -128,23 +117,11 @@ func (s *Service) CreateComment(ctx context.Context, in CreateCommentInput) (com
 	}
 
 	id, at := s.ids.next()
-	first, replay, err := s.claim(ctx, "comment", in.IdempotencyKey, id)
-	if err != nil {
-		return Comment{}, false, err
-	}
-	if replay {
-		c, err := s.store.Comment(ctx, first)
-		return c, false, err
-	}
-
 	c := Comment{
 		ID: id, PostID: in.PostID, ParentID: parentID,
 		AuthorID: author, Body: body, CreatedAt: at,
 	}
-	if err := s.store.CreateComment(ctx, c); err != nil {
-		return Comment{}, false, err
-	}
-	return c, true, nil
+	return s.store.CreateComment(ctx, c, scopedKey("comment", in.IdempotencyKey))
 }
 
 func (s *Service) Like(ctx context.Context, t Target, userID string) error {
@@ -242,16 +219,12 @@ func (s *Service) requireTarget(ctx context.Context, t Target) error {
 	}
 }
 
-// claim scopes keys by kind, so one key can serve a post and a comment.
-func (s *Service) claim(ctx context.Context, kind, key, id string) (first string, replay bool, err error) {
+// scopedKey scopes keys by kind, so one key can serve a post and a comment.
+func scopedKey(kind, key string) string {
 	if key == "" {
-		return "", false, nil
+		return ""
 	}
-	owner, err := s.store.ClaimKey(ctx, kind+":"+key, id)
-	if err != nil {
-		return "", false, err
-	}
-	return owner, owner != id, nil
+	return kind + ":" + key
 }
 
 func text(field, value string, maxLen int) (string, error) {
