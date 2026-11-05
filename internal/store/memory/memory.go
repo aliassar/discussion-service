@@ -35,11 +35,15 @@ func New() *Store {
 
 var _ discussion.Store = (*Store)(nil)
 
-func (s *Store) CreatePost(_ context.Context, p discussion.Post) error {
+func (s *Store) CreatePost(_ context.Context, p discussion.Post, key string) (discussion.Post, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if id, ok := s.boundID(key); ok {
+		return s.posts[id], false, nil
+	}
 	s.posts[p.ID] = p
-	return nil
+	s.bind(key, p.ID)
+	return p, true, nil
 }
 
 func (s *Store) Post(_ context.Context, id string) (discussion.Post, error) {
@@ -52,12 +56,16 @@ func (s *Store) Post(_ context.Context, id string) (discussion.Post, error) {
 	return p, nil
 }
 
-func (s *Store) CreateComment(_ context.Context, c discussion.Comment) error {
+func (s *Store) CreateComment(_ context.Context, c discussion.Comment, key string) (discussion.Comment, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if id, ok := s.boundID(key); ok {
+		return s.comments[id], false, nil
+	}
 	s.comments[c.ID] = c
 	s.commentIDs[c.PostID] = append(s.commentIDs[c.PostID], c.ID)
-	return nil
+	s.bind(key, c.ID)
+	return c, true, nil
 }
 
 func (s *Store) Comment(_ context.Context, id string) (discussion.Comment, error) {
@@ -124,13 +132,17 @@ func (s *Store) LikesForTargets(_ context.Context, targets []discussion.Target) 
 	return out, nil
 }
 
-func (s *Store) ClaimKey(_ context.Context, key, id string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if owner, ok := s.keys[key]; ok {
-		return owner, nil
+// boundID and bind expect s.mu to be held for writing. An empty key is never bound.
+func (s *Store) boundID(key string) (string, bool) {
+	if key == "" {
+		return "", false
 	}
-	s.keys[key] = id
-	return id, nil
+	id, ok := s.keys[key]
+	return id, ok
+}
+
+func (s *Store) bind(key, id string) {
+	if key != "" {
+		s.keys[key] = id
+	}
 }

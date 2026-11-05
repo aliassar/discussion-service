@@ -39,7 +39,7 @@ func TestCommentsByPostIsScopedAndOrdered(t *testing.T) {
 		{ID: "elsewhere", PostID: "p2", CreatedAt: at},
 		{ID: "c2", PostID: "p1", CreatedAt: at},
 	} {
-		if err := s.CreateComment(ctx, c); err != nil {
+		if _, _, err := s.CreateComment(ctx, c, ""); err != nil {
 			t.Fatalf("CreateComment: %v", err)
 		}
 	}
@@ -108,7 +108,7 @@ func TestRemoveLikeThenLikeAgain(t *testing.T) {
 	}
 }
 
-func TestClaimKeyPicksOneWinner(t *testing.T) {
+func TestCreatePostWithOneKeyPicksOneWinner(t *testing.T) {
 	s := memory.New()
 	ctx := context.Background()
 
@@ -116,24 +116,42 @@ func TestClaimKeyPicksOneWinner(t *testing.T) {
 		wg      sync.WaitGroup
 		mu      sync.Mutex
 		winners = map[string]int{}
+		creates int
 	)
 	for i := range 50 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			owner, err := s.ClaimKey(ctx, "key", fmt.Sprintf("id-%d", i))
+			p, created, err := s.CreatePost(ctx, discussion.Post{ID: fmt.Sprintf("id-%d", i)}, "key")
 			if err != nil {
-				t.Errorf("ClaimKey: %v", err)
+				t.Errorf("CreatePost: %v", err)
 				return
+			}
+			// the stored post must be readable as soon as any caller sees it
+			if _, err := s.Post(ctx, p.ID); err != nil {
+				t.Errorf("Post(%s): %v", p.ID, err)
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			winners[owner]++
+			winners[p.ID]++
+			if created {
+				creates++
+			}
 		}()
 	}
 	wg.Wait()
 
-	if len(winners) != 1 {
-		t.Errorf("the key resolved to %d different ids, want 1", len(winners))
+	if len(winners) != 1 || creates != 1 {
+		t.Errorf("got %d distinct posts and %d creates, want 1 and 1", len(winners), creates)
+	}
+}
+
+func TestEmptyKeyIsNeverBound(t *testing.T) {
+	s := memory.New()
+	ctx := context.Background()
+	for _, id := range []string{"a", "b"} {
+		if _, created, err := s.CreatePost(ctx, discussion.Post{ID: id}, ""); err != nil || !created {
+			t.Fatalf("CreatePost(%s) = (created %v, %v), want (true, nil)", id, created, err)
+		}
 	}
 }
