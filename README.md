@@ -1,5 +1,7 @@
 # Discussion service
 
+[![ci](https://github.com/aliassar/discussion-service/actions/workflows/ci.yml/badge.svg)](https://github.com/aliassar/discussion-service/actions/workflows/ci.yml)
+
 An HTTP/JSON API for posts, comments nested to any depth, and likes.
 
 Go 1.23+, standard library only.
